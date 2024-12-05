@@ -5,6 +5,7 @@ const ytdlp = require('yt-dlp-exec');
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const os = require('os');
 const app = express();
 
 // Constants
@@ -16,6 +17,14 @@ const UPLOAD_EMOJI = '📤';
 const ERROR_EMOJI = '❌';
 const SUCCESS_EMOJI = '✅';
 const PROGRESS_FRAMES = ['⏳', '⌛️'];
+
+// Initialize stats
+const stats = {
+    startTime: Date.now(),
+    totalDownloads: 0,
+    activeUsers: new Set(),
+    isOnline: true
+};
 
 // Initialize bot
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -41,14 +50,6 @@ const userSubscriptionSteps = new Map();
 
 // Store user caption requests
 const userCaptionRequests = new Map();
-
-// Stats tracking
-let stats = {
-    totalDownloads: 0,
-    activeUsers: new Set(),
-    startTime: Date.now(),
-    isOnline: true
-};
 
 // Update stats when downloads occur
 function updateStats(chatId) {
@@ -950,7 +951,7 @@ async function handleVideoError(chatId, error, url, messageId = null) {
 }
 
 // Serve static files from public directory
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Stats endpoint
 app.get('/api/stats', (req, res) => {
@@ -972,6 +973,11 @@ app.get('/api/stats', (req, res) => {
 // Status page
 app.get('/status', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'status.html'));
+});
+
+// Handle root path
+app.get('/', (req, res) => {
+    res.send('Telegram YouTube Downloader Bot is running!');
 });
 
 // Start the express server
