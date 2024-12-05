@@ -17,6 +17,6 @@
     "express": "^4.18.2",
     "googleapis": "^128.0.0",
     "node-telegram-bot-api": "^0.64.0",
-    "yt-dlp-exec": "^1.0.2"
+    "ytdl-core": "^4.11.5"
   }
 }

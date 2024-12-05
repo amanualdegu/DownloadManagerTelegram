@@ -1,7 +1,7 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { google } = require('googleapis');
-const ytdlp = require('yt-dlp-exec');
+const ytdl = require('ytdl-core');
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
@@ -250,13 +250,7 @@ bot.on('callback_query', async (callbackQuery) => {
             
             // First verify video is accessible
             try {
-                await ytdlp.exec(url, {
-                    dumpJson: true,
-                    noWarnings: true,
-                    noCallHome: true,
-                    noCheckCertificates: true,
-                    maxFilesize: '1b' // Tiny limit to just check availability
-                });
+                await ytdl.getInfo(url);
             } catch (e) {
                 if (e.message.includes('Video unavailable')) {
                     throw new Error('This video is no longer available.');
@@ -340,30 +334,45 @@ bot.on('callback_query', async (callbackQuery) => {
             const outputPath = path.join(downloadsDir, `video_${Date.now()}.${format === 'mp3' ? 'mp3' : 'mp4'}`);
             
             if (format === 'mp3') {
-                await ytdlp(videoInfo.url, {
-                    extractAudio: true,
-                    audioFormat: 'mp3',
-                    output: outputPath,
-                    noCheckCertificates: true
+                const audioStream = ytdl(videoInfo.url, { filter: 'audioonly' });
+                const fileStream = fs.createWriteStream(outputPath);
+                audioStream.pipe(fileStream);
+
+                await new Promise((resolve, reject) => {
+                    fileStream.on('finish', async () => {
+                        try {
+                            await sendAndDeleteFile(chatId, outputPath);
+                            resolve();
+                        } catch (error) {
+                            reject(error);
+                        }
+                    });
+
+                    fileStream.on('error', (error) => {
+                        reject(error);
+                    });
                 });
             } else {
-                await ytdlp(videoInfo.url, {
-                    format,
-                    output: outputPath,
-                    noCheckCertificates: true
+                const videoStream = ytdl(videoInfo.url, { filter: format });
+                const fileStream = fs.createWriteStream(outputPath);
+                videoStream.pipe(fileStream);
+
+                await new Promise((resolve, reject) => {
+                    fileStream.on('finish', async () => {
+                        try {
+                            await sendAndDeleteFile(chatId, outputPath);
+                            resolve();
+                        } catch (error) {
+                            reject(error);
+                        }
+                    });
+
+                    fileStream.on('error', (error) => {
+                        reject(error);
+                    });
                 });
             }
 
-            await bot.editMessageText(
-                `${UPLOAD_EMOJI} Uploading ${format === 'mp3' ? 'audio' : 'video'}...`,
-                {
-                    chat_id: chatId,
-                    message_id: processingMsg.message_id
-                }
-            );
-
-            await sendAndDeleteFile(chatId, outputPath);
-            
             // Clean up
             userVideoSelections.delete(chatId);
             
@@ -524,12 +533,7 @@ bot.on('message', async (msg) => {
         const videoUrl = userCaptionRequests.get(chatId);
         userCaptionRequests.delete(chatId);
         try {
-            const info = await ytdlp(videoUrl, {
-                dumpJson: true,
-                noWarnings: true,
-                noCallHome: true,
-                noCheckCertificates: true
-            });
+            const info = await ytdl.getInfo(videoUrl);
             await bot.sendMessage(chatId, `📝 Video Caption:\n\n${info.title}\n\n${info.description || 'No description available'}`);
             // Continue with video processing
             processVideoUrl(chatId, videoUrl, info);
@@ -558,12 +562,7 @@ async function processVideoUrl(chatId, url, existingInfo = null) {
     try {
         let info = existingInfo;
         if (!info) {
-            info = await ytdlp(url, {
-                dumpJson: true,
-                noWarnings: true,
-                noCallHome: true,
-                noCheckCertificates: true
-            });
+            info = await ytdl.getInfo(url);
         }
 
         const availableQualities = await getAvailableFormats(url);
@@ -616,7 +615,7 @@ async function processVideoUrl(chatId, url, existingInfo = null) {
 function createQualityKeyboard(qualities) {
     const buttons = qualities.map(q => [{
         text: `📹 ${q.quality}${q.filesize ? ` (${formatFileSize(q.filesize)})` : ''}`,
-        callback_data: `quality_${q.format_id}`
+        callback_data: `quality_${q.itag}`
     }]);
 
     // Add MP3 option at the bottom
@@ -746,48 +745,57 @@ async function searchYouTubeVideos(query) {
     }
 }
 
-// Send file and delete it after sending
-async function sendAndDeleteFile(chatId, filePath) {
+// Function to get available formats
+async function getAvailableFormats(url) {
     try {
-        const stats = await fs.promises.stat(filePath);
-        const fileSize = stats.size;
-        
-        // Check if it's an audio file
-        const isAudio = filePath.toLowerCase().endsWith('.mp3');
-        
-        // Update download stats
-        updateStats(chatId);
+        const info = await ytdl.getInfo(url);
+        const formats = info.formats.filter(format => {
+            return (format.hasVideo && format.hasAudio) || (!format.hasVideo && format.hasAudio);
+        });
 
-        // If file is larger than 50MB, send as a file
-        if (fileSize > 50 * 1024 * 1024) {
-            await bot.sendMessage(chatId, '⚠️ File is larger than 50MB, sending as document...');
-            await bot.sendDocument(chatId, filePath);
-        } else {
-            // Send as playable media based on type
-            if (isAudio) {
-                await bot.sendAudio(chatId, filePath, {
-                    // Add audio metadata if available
-                    title: path.basename(filePath, '.mp3'),
-                    performer: 'YouTube Audio'
-                });
-            } else {
-                await bot.sendVideo(chatId, filePath, {
-                    supports_streaming: true, // Enable streaming
-                    caption: '🎥 Enjoy your video!'
-                });
-            }
-        }
+        const qualities = formats.map(format => ({
+            itag: format.itag,
+            quality: format.qualityLabel || 'Audio Only',
+            container: format.container,
+            hasVideo: format.hasVideo,
+            hasAudio: format.hasAudio,
+            contentLength: format.contentLength
+        }));
+
+        return qualities;
     } catch (error) {
-        console.error('Error sending file:', error);
-        await bot.sendMessage(chatId, '❌ Failed to send media. Please try again.');
-    } finally {
-        // Clean up: delete the file
-        try {
-            await fs.promises.unlink(filePath);
-        } catch (error) {
-            console.error('Error deleting file:', error);
-        }
+        console.error('Error getting formats:', error);
+        throw error;
     }
+}
+
+// Download and send video
+async function downloadAndSendVideo(chatId, url, format) {
+    const info = await ytdl.getInfo(url);
+    const videoPath = path.join(downloadsDir, `${info.videoDetails.videoId}.${format.container}`);
+    
+    const stream = ytdl(url, {
+        quality: format.itag,
+        filter: format => format.itag === format.itag
+    });
+
+    const fileStream = fs.createWriteStream(videoPath);
+    stream.pipe(fileStream);
+
+    return new Promise((resolve, reject) => {
+        fileStream.on('finish', async () => {
+            try {
+                await sendAndDeleteFile(chatId, videoPath, info.videoDetails.title);
+                resolve();
+            } catch (error) {
+                reject(error);
+            }
+        });
+
+        fileStream.on('error', (error) => {
+            reject(error);
+        });
+    });
 }
 
 // Clean downloads directory on startup
@@ -841,113 +849,6 @@ function extractVideoId(url) {
         console.error('Error extracting video ID:', error);
         return null;
     }
-}
-
-// Get available video formats
-async function getAvailableFormats(url) {
-    try {
-        const formats = await ytdlp(url, {
-            dumpJson: true,
-            noWarnings: true,
-            noCallHome: true,
-            noCheckCertificates: true
-        });
-
-        if (!formats || !formats.formats) {
-            throw new Error(`No formats available for video: ${url}`);
-        }
-
-        // Filter and sort formats
-        const availableFormats = formats.formats
-            .filter(format => {
-                // Include only formats with video (except for audio-only formats)
-                return (format.vcodec !== 'none' && format.acodec !== 'none') || 
-                       (format.resolution === 'audio only');
-            })
-            .map(format => ({
-                format_id: format.format_id,
-                quality: getQualityLabel(format),
-                filesize: format.filesize,
-                resolution: format.resolution,
-                fps: format.fps,
-                vcodec: format.vcodec,
-                acodec: format.acodec
-            }))
-            .sort((a, b) => {
-                // Sort by quality (higher resolution first)
-                const resA = parseInt(a.resolution?.split('x')[1]) || 0;
-                const resB = parseInt(b.resolution?.split('x')[1]) || 0;
-                return resB - resA;
-            });
-
-        // Check if we have any valid formats
-        if (availableFormats.length === 0) {
-            throw new Error(`No suitable formats found for video: ${url}`);
-        }
-
-        return availableFormats;
-    } catch (error) {
-        console.error('Error in getAvailableFormats:', error);
-        // Include the URL in the error message
-        error.message = `${error.message}\n\n🔄 Try this URL directly:\n${url}`;
-        throw error;
-    }
-}
-
-// Get quality label for format
-function getQualityLabel(format) {
-    if (format.resolution === 'audio only') {
-        return 'Audio MP3';
-    }
-
-    let label = format.resolution;
-    if (format.fps) {
-        label += ` ${format.fps}fps`;
-    }
-    
-    // Add file size if available
-    if (format.filesize) {
-        const size = formatFileSize(format.filesize);
-        label += ` (${size})`;
-    }
-    
-    return label;
-}
-
-// Handle errors in video processing
-async function handleVideoError(chatId, error, url, messageId = null) {
-    console.error('Video processing error:', error);
-    let errorMessage = `❌ Error processing video\n\n` +
-                      `🎥 Video URL: ${url}\n\n` +
-                      `Would you like to see the video caption? Reply with 'yes' if you want to see it.\n\n` +
-                      `💡 Try copying and pasting this URL:\n${url}`;
-
-    if (error.message.includes('not available')) {
-        errorMessage = `❌ This video is not available\n\n` +
-                      `🎥 Video URL: ${url}\n\n` +
-                      `Would you like to see the video caption? Reply with 'yes' if you want to see it.\n\n` +
-                      `💡 Try copying and pasting this URL:\n${url}`;
-    } else if (error.message.includes('Too large')) {
-        errorMessage = `❌ Video is too large\n\n` +
-                      `🎥 Video URL: ${url}\n\n` +
-                      `Would you like to see the video caption? Reply with 'yes' if you want to see it.\n\n` +
-                      `💡 Try copying and pasting this URL:\n${url}`;
-    }
-
-    if (messageId) {
-        await bot.editMessageText(errorMessage, {
-            chat_id: chatId,
-            message_id: messageId
-        });
-    } else {
-        await bot.sendMessage(chatId, errorMessage);
-    }
-
-    // Store URL for caption request
-    userCaptionRequests.set(chatId, url);
-    
-    // Send URL separately for easy copying
-    await bot.sendMessage(chatId, url);
 }
 
 // Serve static files from public directory
