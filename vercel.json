@@ -3,27 +3,13 @@
     "builds": [
         {
             "src": "index.js",
-            "use": "@vercel/node",
-            "config": {
-                "installCommand": "apt-get update && apt-get install -y python3 && npm ci"
-            }
+            "use": "@vercel/node"
         }
     ],
     "routes": [
         {
-            "src": "/api/(.*)",
-            "dest": "index.js"
-        },
-        {
-            "src": "/status",
-            "dest": "index.js"
-        },
-        {
-            "handle": "filesystem"
-        },
-        {
             "src": "/(.*)",
-            "dest": "index.js"
+            "dest": "/index.js"
         }
     ]
 }
