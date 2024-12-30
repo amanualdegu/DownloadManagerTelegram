@@ -1,22 +1,31 @@
 {
-  "name": "telegram-dl-bot",
+  "name": "downloadmanagertelegram",
   "version": "1.0.0",
   "description": "Telegram bot for downloading YouTube videos",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "vercel-build": "npm ci",
-    "build": "npm ci",
     "dev": "nodemon index.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   },
+  "keywords": [
+    "telegram",
+    "bot",
+    "youtube",
+    "downloader"
+  ],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "dotenv": "^16.0.0",
+    "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "googleapis": "^128.0.0",
     "node-telegram-bot-api": "^0.64.0",
-    "yt-dlp-exec": "^1.0.2"
+    "yt-dlp-exec": "^1.0.2",
+    "googleapis": "^128.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   }
 }

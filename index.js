@@ -35,11 +35,23 @@ const youtube = google.youtube({
     auth: YOUTUBE_API_KEY
 });
 
-// Create downloads directory if it doesn't exist
-const downloadsDir = path.join(__dirname, 'downloads');
-if (!fs.existsSync(downloadsDir)) {
-    fs.mkdirSync(downloadsDir);
+// Configure downloads directory for Vercel
+const downloadsDir = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'downloads');
+
+// Create downloads directory if it doesn't exist and we're not on Vercel
+if (!process.env.VERCEL) {
+    if (!fs.existsSync(downloadsDir)) {
+        fs.mkdirSync(downloadsDir, { recursive: true });
+    }
 }
+
+// Configure yt-dlp path for Vercel
+const ytDlpConfig = {
+    cwd: process.env.VERCEL ? '/tmp' : process.cwd(),
+    noCheckCertificates: true,
+    noWarnings: true,
+    preferFreeFormats: true
+};
 
 // Store user search results
 const userSearchResults = new Map();
@@ -310,13 +322,10 @@ bot.on('callback_query', async (callbackQuery) => {
                 errorMessage = '❌ This video is not available.';
             }
             
-            await bot.editMessageText(
-                errorMessage,
-                {
-                    chat_id: chatId,
-                    message_id: processingMsg.message_id
-                }
-            );
+            await bot.editMessageText(errorMessage, {
+                chat_id: chatId,
+                message_id: processingMsg.message_id
+            });
         }
     }
     else if (data.startsWith('quality_')) {
@@ -340,17 +349,19 @@ bot.on('callback_query', async (callbackQuery) => {
             const outputPath = path.join(downloadsDir, `video_${Date.now()}.${format === 'mp3' ? 'mp3' : 'mp4'}`);
             
             if (format === 'mp3') {
-                await ytdlp(videoInfo.url, {
+                await ytdlp.exec(videoInfo.url, {
                     extractAudio: true,
                     audioFormat: 'mp3',
                     output: outputPath,
-                    noCheckCertificates: true
+                    noCheckCertificates: true,
+                    ...ytDlpConfig
                 });
             } else {
-                await ytdlp(videoInfo.url, {
+                await ytdlp.exec(videoInfo.url, {
                     format,
                     output: outputPath,
-                    noCheckCertificates: true
+                    noCheckCertificates: true,
+                    ...ytDlpConfig
                 });
             }
 
@@ -524,11 +535,12 @@ bot.on('message', async (msg) => {
         const videoUrl = userCaptionRequests.get(chatId);
         userCaptionRequests.delete(chatId);
         try {
-            const info = await ytdlp(videoUrl, {
+            const info = await ytdlp.exec(videoUrl, {
                 dumpJson: true,
                 noWarnings: true,
                 noCallHome: true,
-                noCheckCertificates: true
+                noCheckCertificates: true,
+                ...ytDlpConfig
             });
             await bot.sendMessage(chatId, `📝 Video Caption:\n\n${info.title}\n\n${info.description || 'No description available'}`);
             // Continue with video processing
@@ -558,11 +570,12 @@ async function processVideoUrl(chatId, url, existingInfo = null) {
     try {
         let info = existingInfo;
         if (!info) {
-            info = await ytdlp(url, {
+            info = await ytdlp.exec(url, {
                 dumpJson: true,
                 noWarnings: true,
                 noCallHome: true,
-                noCheckCertificates: true
+                noCheckCertificates: true,
+                ...ytDlpConfig
             });
         }
 
@@ -705,7 +718,7 @@ const welcomeMessages = {
         'ኣብነት: /search ሙዚቃ',
     
     tigrigna: 'እንቋዕ ብደሓን መጻእኩም! እነሆ ዝክእሎ:\n\n' +
-        '1. 🔍 ብቑልፊ ቃላት ቪድዮታት ይድለዩ\n' +
+        '1. 🔍 ብቑልፊ ቃላት ቪድዮታት የድለዩ\n' +
         '2. ⬇️ ካብ ዩቱብ URLs ቀጥታ ቪድዮታት የውርድ\n' +
         '3. 🎵 ቪድዮታት ናብ MP3 ይቕይር\n' +
         '4. 📱 ካብ ብዙሓት ጽሬት ይምረጹ\n\n' +
@@ -846,11 +859,12 @@ function extractVideoId(url) {
 // Get available video formats
 async function getAvailableFormats(url) {
     try {
-        const formats = await ytdlp(url, {
+        const formats = await ytdlp.exec(url, {
             dumpJson: true,
             noWarnings: true,
             noCallHome: true,
-            noCheckCertificates: true
+            noCheckCertificates: true,
+            ...ytDlpConfig
         });
 
         if (!formats || !formats.formats) {
