@@ -8,14 +8,19 @@
     ],
     "routes": [
         {
+            "src": "/status",
+            "dest": "public/status.html"
+        },
+        {
+            "src": "/api/(.*)",
+            "dest": "index.js"
+        },
+        {
             "src": "/(.*)",
             "dest": "index.js"
         }
     ],
-    "functions": {
-        "index.js": {
-            "memory": 1024,
-            "maxDuration": 60
-        }
+    "env": {
+        "NODE_ENV": "production"
     }
 }

@@ -1,12 +1,13 @@
-require('dotenv').config();
-const TelegramBot = require('node-telegram-bot-api');
-const { google } = require('googleapis');
-const ytdlp = require('yt-dlp-exec');
-const fs = require('fs');
-const path = require('path');
 const express = require('express');
-const os = require('os');
+const TelegramBot = require('node-telegram-bot-api');
+const path = require('path');
+const fs = require('fs');
+const ytdlp = require('yt-dlp-exec');
+const { google } = require('googleapis');
+require('dotenv').config();
+
 const app = express();
+const PORT = process.env.PORT || 3000;
 
 // Constants
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -37,12 +38,79 @@ const youtube = google.youtube({
 
 // Configure downloads directory for Vercel
 const downloadsDir = process.env.VERCEL ? '/tmp' : path.join(__dirname, 'downloads');
+const usersFile = process.env.VERCEL ? '/tmp/users.json' : path.join(__dirname, 'data', 'users.json');
+const logsFile = process.env.VERCEL ? '/tmp/logs.json' : path.join(__dirname, 'data', 'logs.json');
 
-// Create downloads directory if it doesn't exist and we're not on Vercel
+// Create necessary directories
 if (!process.env.VERCEL) {
     if (!fs.existsSync(downloadsDir)) {
         fs.mkdirSync(downloadsDir, { recursive: true });
     }
+    if (!fs.existsSync(path.dirname(usersFile))) {
+        fs.mkdirSync(path.dirname(usersFile), { recursive: true });
+    }
+}
+
+// Initialize or load users and logs
+let users = {};
+let logs = [];
+
+try {
+    if (fs.existsSync(usersFile)) {
+        users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+    }
+    if (fs.existsSync(logsFile)) {
+        logs = JSON.parse(fs.readFileSync(logsFile, 'utf8'));
+    }
+} catch (error) {
+    console.error('Error loading users or logs:', error);
+}
+
+// Function to save users
+function saveUsers() {
+    try {
+        fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+    } catch (error) {
+        console.error('Error saving users:', error);
+    }
+}
+
+// Function to save logs
+function saveLogs() {
+    try {
+        fs.writeFileSync(logsFile, JSON.stringify(logs, null, 2));
+    } catch (error) {
+        console.error('Error saving logs:', error);
+    }
+}
+
+// Function to add log entry
+function addLog(type, message, userId = null) {
+    const log = {
+        timestamp: new Date().toISOString(),
+        type,
+        message,
+        userId
+    };
+    logs.unshift(log); // Add to beginning of array
+    if (logs.length > 1000) logs.pop(); // Keep only last 1000 logs
+    saveLogs();
+}
+
+// Function to register or update user
+function registerUser(userId, username, firstName, lastName) {
+    const user = {
+        userId,
+        username,
+        firstName,
+        lastName,
+        firstSeen: users[userId]?.firstSeen || new Date().toISOString(),
+        lastSeen: new Date().toISOString(),
+        downloadCount: users[userId]?.downloadCount || 0
+    };
+    users[userId] = user;
+    saveUsers();
+    return user;
 }
 
 // Configure yt-dlp path for Vercel
@@ -144,6 +212,14 @@ async function sendSubscriptionMessage(chatId) {
 // Handle /start command
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
+    const user = registerUser(
+        msg.from.id,
+        msg.from.username,
+        msg.from.first_name,
+        msg.from.last_name
+    );
+    addLog('command', '/start command used', msg.from.id);
+    
     console.log(`[${new Date().toISOString()}] Start command received from:`, chatId);
     await sendSubscriptionMessage(chatId);
 });
@@ -967,22 +1043,33 @@ async function handleVideoError(chatId, error, url, messageId = null) {
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Stats endpoint
+// API endpoints for stats
 app.get('/api/stats', (req, res) => {
-    const uptime = Math.floor((Date.now() - stats.startTime) / 3600000) + 'h';
-    const memoryUsage = Math.floor((os.totalmem() - os.freemem()) / os.totalmem() * 100);
-    const cpuUsage = os.loadavg()[0] * 100 / os.cpus().length;
-    
-    res.json({
-        totalDownloads: stats.totalDownloads,
-        activeUsers: stats.activeUsers.size,
-        uptime,
-        memoryUsage: Math.floor(memoryUsage),
-        cpuUsage: Math.floor(cpuUsage),
-        storage: Math.floor(os.freemem() / 1024 / 1024 / 1024),
-        isOnline: stats.isOnline
-    });
+    const stats = {
+        totalUsers: Object.keys(users).length,
+        totalDownloads: Object.values(users).reduce((sum, user) => sum + user.downloadCount, 0),
+        recentLogs: logs.slice(0, 100), // Last 100 logs
+        activeUsers: Object.values(users)
+            .filter(user => {
+                const lastSeen = new Date(user.lastSeen);
+                const daysSinceLastSeen = (new Date() - lastSeen) / (1000 * 60 * 60 * 24);
+                return daysSinceLastSeen <= 7;
+            })
+            .length
+    };
+    res.json(stats);
 });
+
+// Update download count when a video is downloaded
+async function handleDownload(msg, format) {
+    const userId = msg.from.id;
+    if (users[userId]) {
+        users[userId].downloadCount++;
+        users[userId].lastSeen = new Date().toISOString();
+        saveUsers();
+    }
+    addLog('download', `Video downloaded in ${format} format`, userId);
+}
 
 // Status page
 app.get('/status', (req, res) => {
@@ -995,7 +1082,6 @@ app.get('/', (req, res) => {
 });
 
 // Start the express server
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
